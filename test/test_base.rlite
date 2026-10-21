@@ -1,0 +1,17 @@
+type Score <- int;
+const float limit <- 10.0;
+int x <- 2;
+float ratio <- 1.5e+1;
+bool active <- TRUE;
+string label <- "result\n";
+int[] values <- c(1, 2, 3);
+
+read(x);
+if (x <= 10 & active) {
+	values[1] <- x;
+	print(label, values[1]);
+} else {
+	while (x > 0) {
+		x <- x - 1;
+	}
+}

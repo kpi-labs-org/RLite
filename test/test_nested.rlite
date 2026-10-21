@@ -1,0 +1,15 @@
+int factorial <- function(int n) {
+	if (n <= 1) {
+		return 1;
+	} else {
+		return n * factorial(n - 1);
+	}
+}
+
+int i <- 1;
+while (i <= 5) {
+	if (i != 3) {
+		print("Fact:", factorial(i));
+	}
+	i <- i + 1;
+}
