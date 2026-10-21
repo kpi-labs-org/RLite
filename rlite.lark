@@ -1,0 +1,95 @@
+program: statement* expression?
+
+statement: type_declaration
+         | constant_declaration
+         | function_declaration
+         | variable_declaration
+         | if_statement
+         | while_statement
+         | return_statement
+         | input_statement
+         | output_statement
+         | assignment
+         | expression_statement
+
+variable_declaration: data_type IDENTIFIER ( ASSIGN_OPERATOR expression )? ";"
+constant_declaration: "const" data_type IDENTIFIER ASSIGN_OPERATOR expression ";"
+type_declaration: "type" IDENTIFIER ASSIGN_OPERATOR base_type ";"
+
+data_type: array_type | base_type
+array_type: base_type "[" "]"
+base_type: scalar_type | IDENTIFIER
+scalar_type: "int" | "float" | "bool" | "string"
+
+assignment: assignable ASSIGN_OPERATOR expression ";"
+assignable: array_access | IDENTIFIER
+
+input_statement: "read" "(" input_list ")" ";"
+input_list: assignable ( "," assignable )*
+output_statement: "print" "(" argument_list? ")" ";"
+
+if_statement: "if" "(" expression ")" block else_clause?
+else_clause: "else" ( if_statement | block )
+while_statement: "while" "(" expression ")" block
+block: "{" statement* "}"
+
+function_declaration: data_type IDENTIFIER ASSIGN_OPERATOR "function" "(" parameter_list? ")" block
+parameter_list: parameter ( "," parameter )*
+parameter: data_type IDENTIFIER
+return_statement: "return" expression ";"
+function_call: IDENTIFIER "(" argument_list? ")"
+argument_list: expression ( "," expression )*
+
+array_literal: "c" "(" argument_list? ")"
+array_access: IDENTIFIER "[" expression "]"
+
+expression_statement: expression ";"
+
+expression: logical_or_expression
+logical_or_expression: logical_and_expression ( "|" logical_and_expression )*
+logical_and_expression: equality_expression ( "&" equality_expression )*
+equality_expression: comparison_expression ( equality_operator comparison_expression )?
+equality_operator: EQUAL_OPERATOR | NOT_EQUAL_OPERATOR
+
+comparison_expression: additive_expression ( comparison_operator additive_expression )?
+comparison_operator: LESS_EQUAL_OPERATOR | GREATER_EQUAL_OPERATOR | "<" | ">"
+
+additive_expression: multiplicative_expression ( additive_operator multiplicative_expression )*
+additive_operator: "+" | "-"
+multiplicative_expression: unary_expression ( multiplicative_operator unary_expression )*
+multiplicative_operator: "*" | "/"
+
+unary_expression: unary_operator unary_expression
+                | power_expression
+unary_operator: "+" | "-" | "!"
+
+power_expression: primary_expression ( "^" unary_expression )?
+primary_expression: cast_expression
+                  | array_literal
+                  | function_call
+                  | array_access
+                  | FLOAT_LITERAL
+                  | INT_LITERAL
+                  | BOOL_LITERAL
+                  | STRING_LITERAL
+                  | IDENTIFIER
+                  | "(" expression ")"
+
+cast_expression: scalar_type "(" expression ")"
+
+ASSIGN_OPERATOR.2: "<-"
+EQUAL_OPERATOR: "=="
+NOT_EQUAL_OPERATOR: "!="
+LESS_EQUAL_OPERATOR: "<="
+GREATER_EQUAL_OPERATOR: ">="
+
+BOOL_LITERAL: "TRUE" | "FALSE"
+IDENTIFIER: /[a-zA-Z_][a-zA-Z0-9_]*/
+FLOAT_LITERAL: /\d+\.\d*([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?|\d+[eE][+-]?\d+/
+INT_LITERAL: /\d+/
+STRING_LITERAL: /"([^"\\]|\\.)*"/
+
+%import common.WS
+%ignore WS
+COMMENT: /#[^\n]*/
+%ignore COMMENT
