@@ -1,0 +1,6 @@
+int global_var <- 1;
+int my_func <- function(int param) {
+    int local_var <- param + global_var;
+    return local_var;
+}
+local_var <- 5;
