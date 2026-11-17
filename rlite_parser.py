@@ -9,6 +9,12 @@ stepIndt = 2
 tabName = {'univ': {'declIn': '-'}}
 current_context = 'univ'
 
+class _NullCodegen:
+    def __getattr__(self, _):
+        return lambda *args, **kwargs: 0
+
+cg = _NullCodegen()
+
 def insert(cxt, name, kind, type_, val, nParam='-'):
     if name in tabName[cxt]:
         return False
@@ -22,6 +28,14 @@ def findName(name, cxt):
             return tabName[curr][name]
         curr = tabName[curr].get('declIn', '-')
     return None
+
+def findNameWithScope(name, cxt):
+    curr = cxt
+    while curr != '-':
+        if name in tabName[curr]:
+            return tabName[curr][name], curr
+        curr = tabName[curr].get('declIn', '-')
+    return None, None
 
 def setAssigned(name, cxt):
     curr = cxt
@@ -95,10 +109,13 @@ def getTypeOp(lType, op, rType):
         return 'type_error'
     typesAreSame = (lType == rType)
     typesArithm = lType in ('int', 'float') and rType in ('int', 'float')
-    if op in ('+', '-', '*', '/', '^'):
+    if op in ('+', '-', '*', '/'):
         if not typesArithm: return 'type_error'
         if lType == 'float' or rType == 'float': return 'float'
         return 'int'
+    if op == '^':
+        if not typesArithm: return 'type_error'
+        return 'float'
     if op in ('<', '<=', '>', '>=', '==', '!='):
         if typesArithm or typesAreSame: return 'bool'
         return 'type_error'
@@ -175,29 +192,40 @@ def parseDeclarationRouter():
         parseToken('<-', 'assign_op')
         parseToken('function', 'keyword')
         
-        if not insert(current_context, id_val, 'func', type_val, '-', '-'):
+        if not insert(current_context, id_val, 'func', type_val, '-', 0):
             failSem('повторне оголошення', (t_id[0], t_id[1], t_id[2]))
             
         tabName[id_val] = {'declIn': current_context}
         prev_context = current_context
         current_context = id_val
+        cg.on_func_enter(id_val, type_val, prev_context)
         
         parseToken('(', 'par_op')
+        n_params = 0
         if peek_tok(0)[1] != ')':
-            parseParameterList()
+            n_params = parseParameterList()
         parseToken(')', 'par_op')
-        parseBlock()
         
+        attr = list(tabName[prev_context][id_val])
+        attr[4] = n_params
+        tabName[prev_context][id_val] = tuple(attr)
+        cg.on_func_params_done(id_val, prev_context, type_val, n_params)
+        
+        parseBlock()
+        cg.on_func_exit(type_val)
         current_context = prev_context
     else:
         if not insert(current_context, id_val, 'var', type_val, 'undefined'):
             failSem('повторне оголошення', (t_id[0], t_id[1], t_id[2]))
+        cg.on_var_decl(id_val, type_val)
         if peek_tok(0)[1] == '<-':
             t_ass = peek_tok(0)
             parseToken('<-', 'assign_op')
+            cg.on_assign_start(id_val, current_context)
             rType = parseExpression()
             if getTypeOp(type_val, '<-', rType) == 'type_error':
                 failSem('невідповідність типів присвоєння', (t_ass[0], t_ass[1], t_ass[2]))
+            cg.on_assign_end(type_val, rType)
             setAssigned(id_val, current_context)
         parseToken(';', 'punct')
 
@@ -212,10 +240,13 @@ def parseConstantDeclaration():
     parseToken('', 'id')
     t_ass = peek_tok(0)
     parseToken('<-', 'assign_op')
+    cg.on_var_decl(id_val, type_val)
+    cg.on_assign_start(id_val, current_context)
     rType = parseExpression()
     
     if getTypeOp(type_val, '<-', rType) == 'type_error':
         failSem('невідповідність типів присвоєння', (t_ass[0], t_ass[1], t_ass[2]))
+    cg.on_assign_end(type_val, rType)
         
     if not insert(current_context, id_val, 'const', type_val, 'assigned'):
         failSem('повторне оголошення', (t_id[0], t_id[1], t_id[2]))
@@ -236,7 +267,6 @@ def parseTypeDeclaration():
     parseToken(';', 'punct')
 
 def parseDataType():
-    t0 = peek_tok(0)
     t1 = peek_tok(1)
     if t1[1] == '[':
         return parseArrayType()
@@ -264,11 +294,12 @@ def parseScalarType():
 
 def parseAssignment():
     t0 = peek_tok(0)
-    attr = findName(t0[1], current_context)
+    attr, decl_scope = findNameWithScope(t0[1], current_context)
     if not attr:
         failSem('неоголошена змінна', (t0[0], t0[1], t0[2]))
     lType = attr[2]
     
+    cg.on_assign_start(t0[1], decl_scope)
     parseAssignable()
     t_ass = peek_tok(0)
     parseToken('<-', 'assign_op')
@@ -276,6 +307,7 @@ def parseAssignment():
     
     if getTypeOp(lType, '<-', rType) == 'type_error':
         failSem('невідповідність типів присвоєння', (t_ass[0], t_ass[1], t_ass[2]))
+    cg.on_assign_end(lType, rType)
         
     setAssigned(t0[1], current_context)
     parseToken(';', 'punct')
@@ -297,25 +329,32 @@ def parseInputStatement():
 def parseInputList():
     t0 = peek_tok(0)
     parseAssignable()
-    attr = findName(t0[1], current_context)
+    attr, decl_scope = findNameWithScope(t0[1], current_context)
     if not attr: 
         failSem('неоголошена змінна', (t0[0], t0[1], t0[2]))
+    cg.on_read_var(t0[1], attr[2], decl_scope)
     setAssigned(t0[1], current_context)
     
     while peek_tok(0)[1] == ',':
         parseToken(',', 'punct')
         t_next = peek_tok(0)
         parseAssignable()
-        attr_next = findName(t_next[1], current_context)
+        attr_next, decl_next = findNameWithScope(t_next[1], current_context)
         if not attr_next: 
             failSem('неоголошена змінна', (t_next[0], t_next[1], t_next[2]))
+        cg.on_read_var(t_next[1], attr_next[2], decl_next)
         setAssigned(t_next[1], current_context)
 
 def parseOutputStatement():
     parseToken('print', 'keyword')
     parseToken('(', 'par_op')
     if peek_tok(0)[1] != ')':
-        parseArgumentList()
+        parseExpression()
+        cg.on_print_item()
+        while peek_tok(0)[1] == ',':
+            parseToken(',', 'punct')
+            parseExpression()
+            cg.on_print_item()
     parseToken(')', 'par_op')
     parseToken(';', 'punct')
 
@@ -327,9 +366,14 @@ def parseIfStatement():
     if eType != 'bool':
         failSem('умова має бути типу bool', (t_expr[0], t_expr[1], t_expr[2]))
     parseToken(')', 'par_op')
+    m1 = cg.on_if_cond()
     parseBlock()
     if peek_tok(0)[1] == 'else':
+        m2 = cg.on_if_else(m1)
         parseElseClause()
+        cg.on_if_end(m2)
+    else:
+        cg.on_if_end(m1)
 
 def parseElseClause():
     parseToken('else', 'keyword')
@@ -340,13 +384,16 @@ def parseElseClause():
 
 def parseWhileStatement():
     parseToken('while', 'keyword')
+    m1, m2 = cg.on_while_start() or (0, 0)
     parseToken('(', 'par_op')
     t_expr = peek_tok(0)
     eType = parseExpression()
     if eType != 'bool':
         failSem('умова має бути типу bool', (t_expr[0], t_expr[1], t_expr[2]))
     parseToken(')', 'par_op')
+    cg.on_while_cond(m2)
     parseBlock()
+    cg.on_while_end(m1, m2)
 
 def parseBlock():
     parseToken('{', 'brace_op')
@@ -355,10 +402,13 @@ def parseBlock():
     parseToken('}', 'brace_op')
 
 def parseParameterList():
+    count = 1
     parseParameter()
     while peek_tok(0)[1] == ',':
         parseToken(',', 'punct')
         parseParameter()
+        count += 1
+    return count
 
 def parseParameter():
     type_val = parseDataType()
@@ -367,10 +417,18 @@ def parseParameter():
     parseToken('', 'id')
     if not insert(current_context, id_val, 'var', type_val, 'assigned'):
         failSem('повторне оголошення параметра', (t_id[0], t_id[1], t_id[2]))
+    cg.on_var_decl(id_val, type_val)
 
 def parseReturnStatement():
+    t_ret = peek_tok(0)
     parseToken('return', 'keyword')
-    parseExpression()
+    rType = parseExpression()
+    if current_context != 'univ':
+        parent = tabName[current_context]['declIn']
+        expected_ret = tabName[parent][current_context][2]
+        if expected_ret != 'void' and getTypeOp(expected_ret, '<-', rType) == 'type_error':
+            failSem('невідповідність типу повернення функції', (t_ret[0], t_ret[1], t_ret[2]))
+    cg.on_return(rType)
     parseToken(';', 'punct')
 
 def parseArgumentList():
@@ -389,45 +447,57 @@ def parseExpression():
 def parseLogicalOrExpression():
     lType = parseLogicalAndExpression()
     while peek_tok(0)[1] == '|':
+        left_pos = cg.code_len()
         t_op = peek_tok(0)
         parseToken('|', 'logic_op')
         rType = parseLogicalAndExpression()
-        lType = getTypeOp(lType, '|', rType)
-        if lType == 'type_error':
+        resType = getTypeOp(lType, '|', rType)
+        if resType == 'type_error':
             failSem('невідповідність типів', (t_op[0], t_op[1], t_op[2]))
+        cg.on_binop('|', lType, rType, left_pos)
+        lType = resType
     return lType
 
 def parseLogicalAndExpression():
     lType = parseEqualityExpression()
     while peek_tok(0)[1] == '&':
+        left_pos = cg.code_len()
         t_op = peek_tok(0)
         parseToken('&', 'logic_op')
         rType = parseEqualityExpression()
-        lType = getTypeOp(lType, '&', rType)
-        if lType == 'type_error':
+        resType = getTypeOp(lType, '&', rType)
+        if resType == 'type_error':
             failSem('невідповідність типів', (t_op[0], t_op[1], t_op[2]))
+        cg.on_binop('&', lType, rType, left_pos)
+        lType = resType
     return lType
 
 def parseEqualityExpression():
     lType = parseComparisonExpression()
+    left_pos = cg.code_len()
     if peek_tok(0)[1] in ('==', '!='):
         t_op = peek_tok(0)
         parseToken(t_op[1], 'rel_op')
         rType = parseComparisonExpression()
-        lType = getTypeOp(lType, t_op[1], rType)
-        if lType == 'type_error':
+        resType = getTypeOp(lType, t_op[1], rType)
+        if resType == 'type_error':
             failSem('невідповідність типів', (t_op[0], t_op[1], t_op[2]))
+        cg.on_binop(t_op[1], lType, rType, left_pos)
+        lType = resType
     return lType
 
 def parseComparisonExpression():
     lType = parseAdditiveExpression()
+    left_pos = cg.code_len()
     if peek_tok(0)[1] in ('<=', '>=', '<', '>'):
         t_op = peek_tok(0)
         parseToken(t_op[1], 'rel_op')
         rType = parseAdditiveExpression()
-        lType = getTypeOp(lType, t_op[1], rType)
-        if lType == 'type_error':
+        resType = getTypeOp(lType, t_op[1], rType)
+        if resType == 'type_error':
             failSem('невідповідність типів', (t_op[0], t_op[1], t_op[2]))
+        cg.on_binop(t_op[1], lType, rType, left_pos)
+        lType = resType
     return lType
 
 def parseAdditiveExpression():
@@ -435,12 +505,15 @@ def parseAdditiveExpression():
     print(indent + 'parseAdditiveExpression():')
     lType = parseMultiplicativeExpression()
     while peek_tok(0)[1] in ('+', '-'):
+        left_pos = cg.code_len()
         t_op = peek_tok(0)
         parseToken(t_op[1], 'add_op')
         rType = parseMultiplicativeExpression()
-        lType = getTypeOp(lType, t_op[1], rType)
-        if lType == 'type_error':
+        resType = getTypeOp(lType, t_op[1], rType)
+        if resType == 'type_error':
             failSem('невідповідність типів', (t_op[0], t_op[1], t_op[2]))
+        cg.on_binop(t_op[1], lType, rType, left_pos)
+        lType = resType
     predIndt()
     return lType
 
@@ -449,12 +522,15 @@ def parseMultiplicativeExpression():
     print(indent + 'parseMultiplicativeExpression():')
     lType = parseUnaryExpression()
     while peek_tok(0)[1] in ('*', '/'):
+        left_pos = cg.code_len()
         t_op = peek_tok(0)
         parseToken(t_op[1], 'mult_op')
         rType = parseUnaryExpression()
-        lType = getTypeOp(lType, t_op[1], rType)
-        if lType == 'type_error':
+        resType = getTypeOp(lType, t_op[1], rType)
+        if resType == 'type_error':
             failSem('невідповідність типів', (t_op[0], t_op[1], t_op[2]))
+        cg.on_binop(t_op[1], lType, rType, left_pos)
+        lType = resType
     predIndt()
     return lType
 
@@ -465,12 +541,14 @@ def parseUnaryExpression():
         rType = parseUnaryExpression()
         if rType not in ('int', 'float'):
             failSem('невідповідність типів', (t0[0], t0[1], t0[2]))
+        cg.on_unop(t0[1])
         return rType
     elif t0[1] == '!':
         parseToken('!', 'logic_op')
         rType = parseUnaryExpression()
         if rType != 'bool':
             failSem('невідповідність типів', (t0[0], t0[1], t0[2]))
+        cg.on_unop('!')
         return rType
     else:
         return parsePowerExpression()
@@ -480,12 +558,15 @@ def parsePowerExpression():
     print(indent + 'parsePowerExpression():')
     lType = parsePrimaryExpression()
     if peek_tok(0)[1] == '^':
+        left_pos = cg.code_len()
         t_op = peek_tok(0)
         parseToken('^', 'power_op')
         rType = parseUnaryExpression()
-        lType = getTypeOp(lType, '^', rType)
-        if lType == 'type_error':
+        resType = getTypeOp(lType, '^', rType)
+        if resType == 'type_error':
             failSem('невідповідність типів', (t_op[0], t_op[1], t_op[2]))
+        cg.on_binop('^', lType, rType, left_pos)
+        lType = resType
     predIndt()
     return lType
 
@@ -500,7 +581,7 @@ def parsePrimaryExpression():
     elif t0[1] == 'c':
         res_type = parseArrayLiteral()
     elif t0[2] == 'id':
-        attr = findName(t0[1], current_context)
+        attr, decl_scope = findNameWithScope(t0[1], current_context)
         if not attr:
             failSem('неоголошена змінна', (t0[0], t0[1], t0[2]))
         
@@ -515,6 +596,7 @@ def parsePrimaryExpression():
             parseToken('', 'id')
             if attr[3] == 'undefined' and attr[1] != 'func':
                 failSem('неініціалізована змінна', (t0[0], t0[1], t0[2]))
+            cg.on_rval(t0[1], decl_scope)
             res_type = attr[2]
     elif t0[1] == '(':
         parseToken('(', 'par_op')
@@ -522,6 +604,7 @@ def parsePrimaryExpression():
         parseToken(')', 'par_op')
     elif t0[2] in ('int', 'float', 'string', 'bool'):
         parseToken(t0[1], t0[2])
+        cg.on_literal(t0[1], t0[2])
         res_type = t0[2]
     else:
         failParse("очікувався первинний вираз", (t0[0], t0[1], t0[2], "ідентифікатор, літерал або '('"))
@@ -530,11 +613,12 @@ def parsePrimaryExpression():
     return res_type
 
 def parseCastExpression():
-    parseScalarType()
+    target_type = parseScalarType()
     parseToken('(', 'par_op')
-    parseExpression()
+    src_type = parseExpression()
     parseToken(')', 'par_op')
-    return 'void'
+    cg.on_cast(src_type, target_type)
+    return target_type
 
 def parseArrayLiteral():
     parseToken('c', 'array_ctor')
@@ -546,23 +630,21 @@ def parseArrayLiteral():
 
 def parseFunctionCall():
     t0 = peek_tok(0)
-    attr = findName(t0[1], current_context)
+    attr, decl_scope = findNameWithScope(t0[1], current_context)
     parseToken('', 'id')
     parseToken('(', 'par_op')
     if peek_tok(0)[1] != ')':
         parseArgumentList()
     parseToken(')', 'par_op')
+    cg.on_call(t0[1], decl_scope, attr)
     return attr[2] if attr else 'type_error'
 
 def parseArrayAccess():
-    t0 = peek_tok(0)
-    attr = findName(t0[1], current_context)
     parseToken('', 'id')
     parseToken('[', 'brack_op')
     parseExpression()
     parseToken(']', 'brack_op')
-    return attr[2].replace('[]', '') if attr else 'type_error'
-
+    return 'type_error'
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
